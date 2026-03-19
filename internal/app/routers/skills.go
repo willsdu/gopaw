@@ -39,10 +39,10 @@ type SkillSpec struct {
 
 // CreateSkillRequest 对应 Python 版 CreateSkillRequest。
 type CreateSkillRequest struct {
-	Name       string                 `json:"name"`
-	Content    string                 `json:"content"`
-	References map[string]any        `json:"references,omitempty"`
-	Scripts    map[string]any        `json:"scripts,omitempty"`
+	Name       string         `json:"name"`
+	Content    string         `json:"content"`
+	References map[string]any `json:"references,omitempty"`
+	Scripts    map[string]any `json:"scripts,omitempty"`
 }
 
 // HubSkillSpec 对应 Python 版 HubSkillSpec。
@@ -75,215 +75,248 @@ type HubInstallResult struct {
 	SourceURL string `json:"source_url"`
 }
 
-// RegisterSkillRoutes 使用 gin 将 /skills 开头的 HTTP 路由注册到路由组上。
-// 建议调用方传入类似 router.Group("/api") 之类的分组，再由本函数在其下挂载 /skills。
-func RegisterSkillRoutes(group *gin.RouterGroup, skills SkillService, hub HubService) {
-	skillsGroup := group.Group("/skills")
+// SkillController 负责把 HTTP 请求（gin）转换为对 SkillService / HubService 的调用，
+// 并把结果序列化为 JSON/HTTP 状态码返回给客户端。
+type SkillController struct {
+	skills SkillService
+	hub    HubService
+}
 
-	// GET /skills
-	skillsGroup.GET("", func(c *gin.Context) {
-		ctx := c.Request.Context()
-		all, err := skills.ListAllSkills(ctx)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		available, err := skills.ListAvailableSkills(ctx)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		enabledSet := make(map[string]struct{}, len(available))
-		for _, s := range available {
-			enabledSet[s.Name] = struct{}{}
-		}
-		var out []SkillSpec
-		for _, s := range all {
-			_, enabled := enabledSet[s.Name]
-			out = append(out, SkillSpec{
-				SkillInfo: s,
-				Enabled:   enabled,
-			})
-		}
-		c.JSON(http.StatusOK, out)
-	})
-
-	// POST /skills
-	skillsGroup.POST("", func(c *gin.Context) {
-		ctx := c.Request.Context()
-		var req CreateSkillRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
-			return
-		}
-		created, err := skills.CreateSkill(ctx, req)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"created": created})
-	})
-
-	// GET /skills/available
-	skillsGroup.GET("/available", func(c *gin.Context) {
-		ctx := c.Request.Context()
-		available, err := skills.ListAvailableSkills(ctx)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		var out []SkillSpec
-		for _, s := range available {
-			out = append(out, SkillSpec{
-				SkillInfo: s,
-				Enabled:   true,
-			})
-		}
-		c.JSON(http.StatusOK, out)
-	})
-
-	// GET /skills/hub/search?q=...&limit=...
-	skillsGroup.GET("/hub/search", func(c *gin.Context) {
-		if hub == nil {
-			c.JSON(http.StatusNotImplemented, gin.H{"error": "hub service not configured"})
-			return
-		}
-		ctx := c.Request.Context()
-		q := c.DefaultQuery("q", "")
-		limitStr := c.DefaultQuery("limit", "20")
-		limit := 20
-		if v, err := strconv.Atoi(limitStr); err == nil && v > 0 {
-			limit = v
-		}
-		results, err := hub.Search(ctx, q, limit)
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, results)
-	})
-
-	// POST /skills/hub/install
-	skillsGroup.POST("/hub/install", func(c *gin.Context) {
-		if hub == nil {
-			c.JSON(http.StatusNotImplemented, gin.H{"error": "hub service not configured"})
-			return
-		}
-		ctx := c.Request.Context()
-		var req HubInstallRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
-			return
-		}
-		result, err := hub.Install(ctx, req)
-		if err != nil {
-			var badReq *BadRequestError
-			var upstream *UpstreamError
-			switch {
-			case errors.As(err, &badReq):
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			case errors.As(err, &upstream):
-				c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			default:
-				c.JSON(http.StatusBadGateway, gin.H{"error": "skill hub import failed: " + err.Error()})
-			}
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"installed":  true,
-			"name":       result.Name,
-			"enabled":    result.Enabled,
-			"source_url": result.SourceURL,
+// ListAllSkills
+// GET /api/skills
+// - 调用：skills.ListAllSkills + skills.ListAvailableSkills
+// - 输出：SkillSpec 列表，并根据 available 集合计算 Enabled 字段
+func (s *SkillController) ListAllSkills(c *gin.Context) {
+	ctx := c.Request.Context()
+	all, err := s.skills.ListAllSkills(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	available, err := s.skills.ListAvailableSkills(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	enabledSet := make(map[string]struct{}, len(available))
+	for _, s := range available {
+		enabledSet[s.Name] = struct{}{}
+	}
+	var out []SkillSpec
+	for _, s := range all {
+		_, enabled := enabledSet[s.Name]
+		out = append(out, SkillSpec{
+			SkillInfo: s,
+			Enabled:   enabled,
 		})
-	})
+	}
+	c.JSON(http.StatusOK, out)
+}
 
-	// POST /skills/batch-disable
-	skillsGroup.POST("/batch-disable", func(c *gin.Context) {
-		ctx := c.Request.Context()
-		var names []string
-		if err := c.ShouldBindJSON(&names); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
-			return
-		}
-		for _, name := range names {
-			if _, err := skills.DisableSkill(ctx, name); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-		}
-		c.Status(http.StatusNoContent)
-	})
+// CreateSkill
+// POST /api/skills
+// - Body：CreateSkillRequest（JSON）
+// - 输出：{ "created": <bool> }
+func (s *SkillController) CreateSkill(c *gin.Context) {
+	ctx := c.Request.Context()
+	var req CreateSkillRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+		return
+	}
+	created, err := s.skills.CreateSkill(ctx, req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"created": created})
+}
 
-	// POST /skills/batch-enable
-	skillsGroup.POST("/batch-enable", func(c *gin.Context) {
-		ctx := c.Request.Context()
-		var names []string
-		if err := c.ShouldBindJSON(&names); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
-			return
-		}
-		for _, name := range names {
-			if _, err := skills.EnableSkill(ctx, name); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-		}
-		c.Status(http.StatusNoContent)
-	})
+// ListAvailableSkills
+// GET /api/skills/available
+// - 输出：SkillSpec 列表（其中 Enabled 固定为 true）
+func (s *SkillController) ListAvailableSkills(c *gin.Context) {
+	ctx := c.Request.Context()
+	available, err := s.skills.ListAvailableSkills(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var out []SkillSpec
+	for _, sk := range available {
+		out = append(out, SkillSpec{
+			SkillInfo: sk,
+			Enabled:   true,
+		})
+	}
+	c.JSON(http.StatusOK, out)
+}
 
-	// POST /skills/{skill_name}/enable
-	skillsGroup.POST("/:skill_name/enable", func(c *gin.Context) {
-		ctx := c.Request.Context()
-		skillName := c.Param("skill_name")
-		enabled, err := skills.EnableSkill(ctx, skillName)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"enabled": enabled})
-	})
+// HubSearch
+// GET /api/skills/hub/search?q=...&limit=...
+// - Query：q（搜索关键词），limit（数量，默认 20）
+// - 输出：[]HubSkillSpec
+func (s *SkillController) HubSearch(c *gin.Context) {
+	if s.hub == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "hub service not configured"})
+		return
+	}
+	ctx := c.Request.Context()
+	q := c.DefaultQuery("q", "")
+	limitStr := c.DefaultQuery("limit", "20")
+	limit := 20
+	if v, err := strconv.Atoi(limitStr); err == nil && v > 0 {
+		limit = v
+	}
+	results, err := s.hub.Search(ctx, q, limit)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, results)
+}
 
-	// POST /skills/{skill_name}/disable
-	skillsGroup.POST("/:skill_name/disable", func(c *gin.Context) {
-		ctx := c.Request.Context()
-		skillName := c.Param("skill_name")
-		disabled, err := skills.DisableSkill(ctx, skillName)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+// HubInstall
+// POST /api/skills/hub/install
+// - Body：HubInstallRequest（JSON）
+// - 输出：{installed, name, enabled, source_url}
+// - 错误映射：
+//   - BadRequestError => 400
+//   - UpstreamError => 502
+func (s *SkillController) HubInstall(c *gin.Context) {
+	if s.hub == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "hub service not configured"})
+		return
+	}
+	ctx := c.Request.Context()
+	var req HubInstallRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+		return
+	}
+	result, err := s.hub.Install(ctx, req)
+	if err != nil {
+		var badReq *BadRequestError
+		var upstream *UpstreamError
+		switch {
+		case errors.As(err, &badReq):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case errors.As(err, &upstream):
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusBadGateway, gin.H{"error": "skill hub import failed: " + err.Error()})
 		}
-		c.JSON(http.StatusOK, gin.H{"disabled": disabled})
-	})
-
-	// DELETE /skills/{skill_name}
-	skillsGroup.DELETE("/:skill_name", func(c *gin.Context) {
-		ctx := c.Request.Context()
-		skillName := c.Param("skill_name")
-		deleted, err := skills.DeleteSkill(ctx, skillName)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"deleted": deleted})
-	})
-
-	// GET /skills/{skill_name}/files/{source}/{file_path...}
-	skillsGroup.GET("/:skill_name/files/:source/*filePath", func(c *gin.Context) {
-		ctx := c.Request.Context()
-		skillName := c.Param("skill_name")
-		source := c.Param("source")
-		filePath := strings.TrimPrefix(c.Param("filePath"), "/")
-		content, err := skills.LoadSkillFile(ctx, skillName, source, filePath)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"content": content})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"installed":  true,
+		"name":       result.Name,
+		"enabled":    result.Enabled,
+		"source_url": result.SourceURL,
 	})
 }
 
-// BadRequestError 和 UpstreamError 是为了方便 HubService.Install
-// 映射到合适的 HTTP 状态码而预留的错误类型。
+// BatchDisable
+// POST /api/skills/batch-disable
+// - Body：[]string（技能名称列表）
+// - 输出：204 No Content
+func (s *SkillController) BatchDisable(c *gin.Context) {
+	ctx := c.Request.Context()
+	var names []string
+	if err := c.ShouldBindJSON(&names); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+		return
+	}
+	for _, name := range names {
+		if _, err := s.skills.DisableSkill(ctx, name); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// BatchEnable
+// POST /api/skills/batch-enable
+// - Body：[]string（技能名称列表）
+// - 输出：204 No Content
+func (s *SkillController) BatchEnable(c *gin.Context) {
+	ctx := c.Request.Context()
+	var names []string
+	if err := c.ShouldBindJSON(&names); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+		return
+	}
+	for _, name := range names {
+		if _, err := s.skills.EnableSkill(ctx, name); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// EnableSkillByName
+// POST /api/skills/{skill_name}/enable
+// - 输出：{ "enabled": <bool> }
+func (s *SkillController) EnableSkillByName(c *gin.Context) {
+	ctx := c.Request.Context()
+	skillName := c.Param("skill_name")
+	enabled, err := s.skills.EnableSkill(ctx, skillName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"enabled": enabled})
+}
+
+// DisableSkillByName
+// POST /api/skills/{skill_name}/disable
+// - 输出：{ "disabled": <bool> }
+func (s *SkillController) DisableSkillByName(c *gin.Context) {
+	ctx := c.Request.Context()
+	skillName := c.Param("skill_name")
+	disabled, err := s.skills.DisableSkill(ctx, skillName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"disabled": disabled})
+}
+
+// DeleteSkillByName
+// DELETE /api/skills/{skill_name}
+// - 输出：{ "deleted": <bool> }
+func (s *SkillController) DeleteSkillByName(c *gin.Context) {
+	ctx := c.Request.Context()
+	skillName := c.Param("skill_name")
+	deleted, err := s.skills.DeleteSkill(ctx, skillName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
+}
+
+// LoadSkillFileByPath
+// GET /api/skills/{skill_name}/files/{source}/{file_path...}
+// - 将 file_path 作为通配路径拼接后传给 skills.LoadSkillFile
+// - 输出：{ "content": <string> }
+func (s *SkillController) LoadSkillFileByPath(c *gin.Context) {
+	ctx := c.Request.Context()
+	skillName := c.Param("skill_name")
+	source := c.Param("source")
+	filePath := strings.TrimPrefix(c.Param("filePath"), "/")
+	content, err := s.skills.LoadSkillFile(ctx, skillName, source, filePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"content": content})
+}
+
+// BadRequestError / UpstreamError：
+// 用于 HubService.Install 的错误分类，以便在 API 层映射到更合适的 HTTP 状态码。
 type BadRequestError struct {
 	Msg string
 }
@@ -295,5 +328,3 @@ type UpstreamError struct {
 }
 
 func (e *UpstreamError) Error() string { return e.Msg }
-
-

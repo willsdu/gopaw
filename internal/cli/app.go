@@ -13,8 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 
+	"gopaw/internal/app/routers"
 	"gopaw/internal/config"
 )
 
@@ -72,19 +74,21 @@ func newAppCmd(opts rootOpts, rootFlags *rootFlags) *cobra.Command {
 				return fmt.Errorf("listen %s: %w", addr, err)
 			}
 
-			// 简单的 HTTP 多路复用器：健康检查和根路径
-			mux := http.NewServeMux()
-			mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("ok"))
+			// gin 路由：用于挂载 /api/skills 等接口
+			engine := gin.New()
+			engine.Use(gin.Recovery())
+			engine.GET("/healthz", func(c *gin.Context) {
+				c.String(http.StatusOK, "ok")
 			})
-			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("content-type", "text/plain; charset=utf-8")
-				_, _ = w.Write([]byte("gopaw app is running\n"))
+			engine.GET("/", func(c *gin.Context) {
+				c.String(http.StatusOK, "gopaw app is running\n")
 			})
-
+			// 将技能相关 HTTP 接口注册到引擎上。
+			// 目前仓库里还没有 SkillService 的具体实现，因此先使用 stub。
+			r := routers.NewRouter(&skillServiceStub{}, nil)
+			r.Register(engine)
 			srv := &http.Server{
-				Handler:           accessLogMiddleware(mux, f.hideAccessPaths),
+				Handler:           accessLogMiddleware(engine, f.hideAccessPaths),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 
@@ -165,4 +169,37 @@ func accessLogMiddleware(next http.Handler, hideSubstrings []string) http.Handle
 		}
 		slog.Info("access", "method", r.Method, "path", path, "remote", r.RemoteAddr, "dur_ms", time.Since(start).Milliseconds())
 	})
+}
+
+// skillServiceStub 是技能服务的最小占位实现。
+// 目前仓库中只有路由/接口定义，没有实际的 SkillService 实现；
+// 该 stub 仅用于确保接口注册与编译通过。
+type skillServiceStub struct{}
+
+func (s *skillServiceStub) ListAllSkills(ctx context.Context) ([]routers.SkillInfo, error) {
+	return nil, errors.New("SkillService not implemented")
+}
+
+func (s *skillServiceStub) ListAvailableSkills(ctx context.Context) ([]routers.SkillInfo, error) {
+	return nil, errors.New("SkillService not implemented")
+}
+
+func (s *skillServiceStub) DisableSkill(ctx context.Context, name string) (bool, error) {
+	return false, errors.New("SkillService not implemented")
+}
+
+func (s *skillServiceStub) EnableSkill(ctx context.Context, name string) (bool, error) {
+	return false, errors.New("SkillService not implemented")
+}
+
+func (s *skillServiceStub) CreateSkill(ctx context.Context, req routers.CreateSkillRequest) (bool, error) {
+	return false, errors.New("SkillService not implemented")
+}
+
+func (s *skillServiceStub) DeleteSkill(ctx context.Context, name string) (bool, error) {
+	return false, errors.New("SkillService not implemented")
+}
+
+func (s *skillServiceStub) LoadSkillFile(ctx context.Context, skillName, source, filePath string) (string, error) {
+	return "", errors.New("SkillService not implemented")
 }
