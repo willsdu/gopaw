@@ -17,22 +17,23 @@ import (
 	"github.com/spf13/cobra"
 
 	"gopaw/internal/app/routers"
+	"gopaw/internal/app/skills"
 	"gopaw/internal/config"
 )
 
 type appFlags struct {
 	// 监听地址
-	host string `flag:"host" default:"127.0.0.1" usage:"Bind host"`
+	host string
 	// 监听端口
-	port int `flag:"port" default:"8088" usage:"Bind port"`
+	port int
 	// 是否启用自动重载（开发模式）
-	reload bool `flag:"reload" default:"false" usage:"Enable auto-reload (dev only)"`
+	reload bool
 	// 预留的 worker 数量参数（目前只支持 1）
-	workers int `flag:"workers" default:"1" usage:"Worker processes"`
+	workers int
 	// 日志级别字符串（critical|error|warning|info|debug|trace）
-	logLevel string `flag:"log-level" default:"info" usage:"Log level (critical|error|warning|info|debug|trace)"`
+	logLevel string
 	// 需要在访问日志中隐藏的路径子串列表
-	hideAccessPaths []string `flag:"hide-access-paths" default:"/console/push-messages" usage:"Path substrings to hide from access log (repeatable)" multi:"true"`
+	hideAccessPaths []string
 }
 
 func newAppCmd(opts rootOpts, rootFlags *rootFlags) *cobra.Command {
@@ -84,8 +85,7 @@ func newAppCmd(opts rootOpts, rootFlags *rootFlags) *cobra.Command {
 				c.String(http.StatusOK, "gopaw app is running\n")
 			})
 			// 将技能相关 HTTP 接口注册到引擎上。
-			// 目前仓库里还没有 SkillService 的具体实现，因此先使用 stub。
-			r := routers.NewRouter(&skillServiceStub{}, nil)
+			r := routers.NewRouter(skills.NewService(), nil)
 			r.Register(engine)
 			srv := &http.Server{
 				Handler:           accessLogMiddleware(engine, f.hideAccessPaths),
@@ -123,12 +123,13 @@ func newAppCmd(opts rootOpts, rootFlags *rootFlags) *cobra.Command {
 	cmd.SetOut(opts.Out)
 	cmd.SetErr(opts.Err)
 
-	// 使用反射工具函数，根据 appFlags 上的 tag 自动绑定 CLI 参数
-	if err := BindFlagsFromStruct(cmd, f); err != nil {
-		// 这里直接 panic / 返回错误都可以，根据项目风格选择。
-		// 为了让调用方有机会处理，这里选择返回错误。
-		panic(err)
-	}
+	// 手动绑定 CLI 参数，避免使用反射
+	cmd.Flags().StringVar(&f.host, "host", "127.0.0.1", "Bind host")
+	cmd.Flags().IntVar(&f.port, "port", 8088, "Bind port")
+	cmd.Flags().BoolVar(&f.reload, "reload", false, "Enable auto-reload (dev only)")
+	cmd.Flags().IntVar(&f.workers, "workers", 1, "Worker processes")
+	cmd.Flags().StringVar(&f.logLevel, "log-level", "info", "Log level (critical|error|warning|info|debug|trace)")
+	cmd.Flags().StringSliceVar(&f.hideAccessPaths, "hide-access-paths", []string{"/console/push-messages"}, "Path substrings to hide from access log (repeatable)")
 
 	return cmd
 }
@@ -171,35 +172,3 @@ func accessLogMiddleware(next http.Handler, hideSubstrings []string) http.Handle
 	})
 }
 
-// skillServiceStub 是技能服务的最小占位实现。
-// 目前仓库中只有路由/接口定义，没有实际的 SkillService 实现；
-// 该 stub 仅用于确保接口注册与编译通过。
-type skillServiceStub struct{}
-
-func (s *skillServiceStub) ListAllSkills(ctx context.Context) ([]routers.SkillInfo, error) {
-	return nil, errors.New("SkillService not implemented")
-}
-
-func (s *skillServiceStub) ListAvailableSkills(ctx context.Context) ([]routers.SkillInfo, error) {
-	return nil, errors.New("SkillService not implemented")
-}
-
-func (s *skillServiceStub) DisableSkill(ctx context.Context, name string) (bool, error) {
-	return false, errors.New("SkillService not implemented")
-}
-
-func (s *skillServiceStub) EnableSkill(ctx context.Context, name string) (bool, error) {
-	return false, errors.New("SkillService not implemented")
-}
-
-func (s *skillServiceStub) CreateSkill(ctx context.Context, req routers.CreateSkillRequest) (bool, error) {
-	return false, errors.New("SkillService not implemented")
-}
-
-func (s *skillServiceStub) DeleteSkill(ctx context.Context, name string) (bool, error) {
-	return false, errors.New("SkillService not implemented")
-}
-
-func (s *skillServiceStub) LoadSkillFile(ctx context.Context, skillName, source, filePath string) (string, error) {
-	return "", errors.New("SkillService not implemented")
-}
