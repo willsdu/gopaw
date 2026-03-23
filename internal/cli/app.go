@@ -16,8 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 
+	"gopaw/internal/agent"
 	"gopaw/internal/app/routers"
-	"gopaw/internal/app/skills"
 	"gopaw/internal/config"
 )
 
@@ -34,6 +34,20 @@ type appFlags struct {
 	logLevel string
 	// 需要在访问日志中隐藏的路径子串列表
 	hideAccessPaths []string
+}
+
+// registerRouters 注册基础路由
+func registerRouters(engine *gin.Engine) {
+	engine.Use(gin.Recovery())
+	engine.GET("/healthz", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+	engine.GET("/", func(c *gin.Context) {
+		c.String(http.StatusOK, "gopaw app is running\n")
+	})
+	// 将技能相关 HTTP 接口注册到引擎上。
+	r := routers.NewRouter(agent.NewManagerService(), nil)
+	r.Register(engine)
 }
 
 func newAppCmd(opts rootOpts, rootFlags *rootFlags) *cobra.Command {
@@ -77,16 +91,8 @@ func newAppCmd(opts rootOpts, rootFlags *rootFlags) *cobra.Command {
 
 			// gin 路由：用于挂载 /api/skills 等接口
 			engine := gin.New()
-			engine.Use(gin.Recovery())
-			engine.GET("/healthz", func(c *gin.Context) {
-				c.String(http.StatusOK, "ok")
-			})
-			engine.GET("/", func(c *gin.Context) {
-				c.String(http.StatusOK, "gopaw app is running\n")
-			})
-			// 将技能相关 HTTP 接口注册到引擎上。
-			r := routers.NewRouter(skills.NewService(), nil)
-			r.Register(engine)
+			// 注册基础路由
+			registerRouters(engine)
 			srv := &http.Server{
 				Handler:           accessLogMiddleware(engine, f.hideAccessPaths),
 				ReadHeaderTimeout: 10 * time.Second,
@@ -171,4 +177,3 @@ func accessLogMiddleware(next http.Handler, hideSubstrings []string) http.Handle
 		slog.Info("access", "method", r.Method, "path", path, "remote", r.RemoteAddr, "dur_ms", time.Since(start).Milliseconds())
 	})
 }
-

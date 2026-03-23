@@ -23,6 +23,123 @@ func NewRouter(skillService SkillService, hubService HubService) *Router {
 func (r *Router) Register(engine *gin.Engine) {
 	// 统一 API 前缀：/api
 	apiGroup := engine.Group("/api")
+
+	// agent 域：/api/agent
+	agentGroup := apiGroup.Group("/agent")
+	agentCtrl := &AgentController{}
+	agentGroup.GET("/files", agentCtrl.ListWorkingFiles)
+	agentGroup.GET("/files/:md_name", agentCtrl.ReadWorkingFile)
+	agentGroup.PUT("/files/:md_name", agentCtrl.WriteWorkingFile)
+	agentGroup.GET("/memory", agentCtrl.ListMemoryFiles)
+	agentGroup.GET("/memory/:md_name", agentCtrl.ReadMemoryFile)
+	agentGroup.PUT("/memory/:md_name", agentCtrl.WriteMemoryFile)
+	agentGroup.GET("/language", agentCtrl.GetAgentLanguage)
+	agentGroup.PUT("/language", agentCtrl.PutAgentLanguage)
+	agentGroup.GET("/running-config", agentCtrl.GetAgentsRunningConfig)
+	agentGroup.PUT("/running-config", agentCtrl.PutAgentsRunningConfig)
+	agentGroup.GET("/system-prompt-files", agentCtrl.GetSystemPromptFiles)
+	agentGroup.PUT("/system-prompt-files", agentCtrl.PutSystemPromptFiles)
+
+	// console 域：/api/console
+	consoleGroup := apiGroup.Group("/console")
+	consoleCtrl := &ConsoleController{}
+	consoleGroup.GET("/push-messages", consoleCtrl.GetPushMessages)
+
+	// envs 域：/api/envs
+	envsGroup := apiGroup.Group("/envs")
+	envsCtrl := &EnvsController{}
+	envsGroup.GET("", envsCtrl.ListEnvs)
+	envsGroup.PUT("", envsCtrl.BatchSaveEnvs)
+	envsGroup.DELETE("/:key", envsCtrl.DeleteEnv)
+
+	// workspace 域：/api/workspace
+	workspaceGroup := apiGroup.Group("/workspace")
+	workspaceCtrl := &WorkspaceController{}
+	workspaceGroup.GET("/download", workspaceCtrl.DownloadWorkspace)
+	workspaceGroup.POST("/upload", workspaceCtrl.UploadWorkspace)
+
+	// token-usage 域：/api/token-usage
+	tokenGroup := apiGroup.Group("/token-usage")
+	tokenCtrl := &TokenUsageController{}
+	tokenGroup.GET("", tokenCtrl.GetTokenUsage)
+
+	// config 域：/api/config
+	cfgGroup := apiGroup.Group("/config")
+	cfgCtrl := &ConfigController{}
+	cfgGroup.GET("", cfgCtrl.GetAll)
+	cfgGroup.GET("/heartbeat", cfgCtrl.GetHeartbeat)
+	cfgGroup.PUT("/heartbeat", cfgCtrl.PutHeartbeat)
+	cfgGroup.GET("/channels", cfgCtrl.GetChannels)
+	cfgGroup.PUT("/channels", cfgCtrl.PutChannels)
+	cfgGroup.GET("/channels/available", cfgCtrl.GetAvailableChannels)
+	cfgGroup.GET("/llm-routing", cfgCtrl.GetLLMRouting)
+	cfgGroup.PUT("/llm-routing", cfgCtrl.PutLLMRouting)
+	cfgGroup.GET("/console", cfgCtrl.GetConsole)
+	cfgGroup.PUT("/console", cfgCtrl.PutConsole)
+	cfgGroup.GET("/tool-guard", cfgCtrl.GetToolGuard)
+	cfgGroup.PUT("/tool-guard", cfgCtrl.PutToolGuard)
+
+	// tools 域：/api/tools
+	toolsGroup := apiGroup.Group("/tools")
+	toolsCtrl := &ToolsController{}
+	toolsGroup.GET("", toolsCtrl.ListTools)
+	toolsGroup.PATCH("/:tool_name/toggle", toolsCtrl.ToggleTool)
+
+	// mcp 域：/api/mcp
+	mcpGroup := apiGroup.Group("/mcp")
+	mcpCtrl := &MCPController{}
+	mcpGroup.GET("", mcpCtrl.List)
+	mcpGroup.GET("/:client_key", mcpCtrl.Get)
+	mcpGroup.POST("", mcpCtrl.Create)
+	mcpGroup.PUT("/:client_key", mcpCtrl.Update)
+	mcpGroup.PATCH("/:client_key/toggle", mcpCtrl.Toggle)
+	mcpGroup.DELETE("/:client_key", mcpCtrl.Delete)
+
+	// models/providers 域：/api/models
+	providersGroup := apiGroup.Group("/models")
+	providersCtrl := &ProvidersController{}
+	providersGroup.GET("", providersCtrl.ListAllProviders)
+	providersGroup.PUT("/:provider_id/config", providersCtrl.ConfigureProvider)
+	providersGroup.POST("/custom-providers", providersCtrl.CreateCustomProvider)
+	providersGroup.POST("/:provider_id/test", providersCtrl.TestProvider)
+	providersGroup.POST("/:provider_id/discover", providersCtrl.DiscoverModels)
+	providersGroup.POST("/:provider_id/models/test", providersCtrl.TestModel)
+	providersGroup.DELETE("/custom-providers/:provider_id", providersCtrl.DeleteCustomProvider)
+	providersGroup.POST("/:provider_id/models", providersCtrl.AddModel)
+	providersGroup.DELETE("/:provider_id/models/:model_id", providersCtrl.RemoveModel)
+	providersGroup.GET("/active", providersCtrl.GetActiveModels)
+	providersGroup.PUT("/active", providersCtrl.SetActiveModel)
+
+	// local-models 域：/api/local-models
+	localModelsGroup := apiGroup.Group("/local-models")
+	localCtrl := &LocalModelsController{}
+	localModelsGroup.GET("", localCtrl.ListLocal)
+	localModelsGroup.POST("/download", localCtrl.DownloadModel)
+	localModelsGroup.GET("/download-status", localCtrl.GetDownloadStatus)
+	localModelsGroup.DELETE("/:model_id", localCtrl.DeleteLocal)
+	localModelsGroup.POST("/cancel-download/:task_id", localCtrl.CancelDownload)
+
+	// ollama-models 域：/api/ollama-models
+	ollamaGroup := apiGroup.Group("/ollama-models")
+	ollamaCtrl := &OllamaModelsController{}
+	ollamaGroup.GET("", ollamaCtrl.ListOllamaModels)
+	ollamaGroup.POST("/download", ollamaCtrl.DownloadOllamaModel)
+	ollamaGroup.GET("/download-status", ollamaCtrl.GetOllamaDownloadStatus)
+	ollamaGroup.DELETE("/download/:task_id", ollamaCtrl.CancelOllamaDownload)
+	ollamaGroup.DELETE("/:name", ollamaCtrl.DeleteOllamaModel)
+
+	// skills_stream 域：/api/skills/ai/optimize/stream
+	streamCtrl := &SkillsStreamController{}
+	apiGroup.POST("/skills/ai/optimize/stream", streamCtrl.OptimizeSkillStream)
+
+	// voice 域（root level）
+	voiceCtrl := &VoiceController{}
+	engine.POST("/voice/incoming", voiceCtrl.VoiceIncoming)
+	engine.GET("/voice/ws", voiceCtrl.VoiceWS)
+	engine.POST("/voice/status-callback", voiceCtrl.VoiceStatusCallback)
+
+	// 其它同级模块（先占位，路径对齐 copaw）
+
 	// skills 域：/api/skills
 	skillsGroup := apiGroup.Group("/skills")
 

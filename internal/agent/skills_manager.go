@@ -1,4 +1,4 @@
-package skills
+package agent
 
 import (
 	"context"
@@ -11,21 +11,18 @@ import (
 	"gopaw/internal/config"
 )
 
-// Service 实现 routers.SkillService，参照 copaw 的 SkillService 逻辑：
-// builtin + customized 作为“全部技能”来源，active_skills 为已启用技能；
-// enable = 从 builtin/customized 同步到 active，disable = 从 active 移除，
-// create = 写入 customized，delete = 从 customized 删除。
-type Service struct {
+// ManagerService 实现 routers.SkillService，负责技能管理（非 hub）。
+// 对应 copaw 中 skills_manager 的目录同步/读写能力。
+type ManagerService struct {
 	builtinDir    string // 可为空
 	customizedDir string
 	activeDir     string
 }
 
-// NewService 根据 config 中的目录创建 SkillService。
-// builtinDir 若为空则仅使用 customized + active。
-func NewService() *Service {
+// NewManagerService 根据 config 中的目录创建技能管理服务。
+func NewManagerService() *ManagerService {
 	builtin := config.BuiltinSkillsDir()
-	return &Service{
+	return &ManagerService{
 		builtinDir:    builtin,
 		customizedDir: config.CustomizedSkillsDir(),
 		activeDir:     config.ActiveSkillsDir(),
@@ -34,8 +31,7 @@ func NewService() *Service {
 
 const skillMarkdown = "SKILL.md"
 
-// listSkillsFromDir 从指定目录收集所有技能（直接子目录且含有 SKILL.md），与 copaw 一致。
-func (s *Service) listSkillsFromDir(dir, source string) ([]routers.SkillInfo, error) {
+func (s *ManagerService) listSkillsFromDir(dir string) ([]routers.SkillInfo, error) {
 	if dir == "" || !isDir(dir) {
 		return nil, nil
 	}
@@ -67,7 +63,6 @@ func (s *Service) listSkillsFromDir(dir, source string) ([]routers.SkillInfo, er
 }
 
 func parseDescriptionFromFrontmatter(content string) string {
-	// 简单解析：第一个 --- 与第二个 --- 之间为 frontmatter，取 description: 的值
 	const delim = "---"
 	idx := strings.Index(content, delim)
 	if idx < 0 {
@@ -90,20 +85,19 @@ func parseDescriptionFromFrontmatter(content string) string {
 	return ""
 }
 
-func (s *Service) ListAllSkills(ctx context.Context) ([]routers.SkillInfo, error) {
+func (s *ManagerService) ListAllSkills(ctx context.Context) ([]routers.SkillInfo, error) {
 	_ = ctx
-	// 先尝试从 active 同步到 customized（与 copaw 一致），忽略错误
 	_ = s.syncFromActiveToCustomized(nil)
 
 	var all []routers.SkillInfo
 	if s.builtinDir != "" {
-		builtinList, err := s.listSkillsFromDir(s.builtinDir, "builtin")
+		builtinList, err := s.listSkillsFromDir(s.builtinDir)
 		if err != nil {
 			return nil, err
 		}
 		all = append(all, builtinList...)
 	}
-	customList, err := s.listSkillsFromDir(s.customizedDir, "customized")
+	customList, err := s.listSkillsFromDir(s.customizedDir)
 	if err != nil {
 		return nil, err
 	}
@@ -111,9 +105,9 @@ func (s *Service) ListAllSkills(ctx context.Context) ([]routers.SkillInfo, error
 	return dedupeSkillsByName(all), nil
 }
 
-func (s *Service) ListAvailableSkills(ctx context.Context) ([]routers.SkillInfo, error) {
+func (s *ManagerService) ListAvailableSkills(ctx context.Context) ([]routers.SkillInfo, error) {
 	_ = ctx
-	return s.listSkillsFromDir(s.activeDir, "active")
+	return s.listSkillsFromDir(s.activeDir)
 }
 
 func dedupeSkillsByName(skills []routers.SkillInfo) []routers.SkillInfo {
@@ -128,7 +122,7 @@ func dedupeSkillsByName(skills []routers.SkillInfo) []routers.SkillInfo {
 	return out
 }
 
-func (s *Service) DisableSkill(ctx context.Context, name string) (bool, error) {
+func (s *ManagerService) DisableSkill(ctx context.Context, name string) (bool, error) {
 	_ = ctx
 	dir := filepath.Join(s.activeDir, name)
 	if !isDir(dir) {
@@ -140,9 +134,8 @@ func (s *Service) DisableSkill(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
-func (s *Service) EnableSkill(ctx context.Context, name string) (bool, error) {
+func (s *ManagerService) EnableSkill(ctx context.Context, name string) (bool, error) {
 	_ = ctx
-	// 从 builtin 或 customized 同步到 active
 	sourceDir := ""
 	if s.builtinDir != "" && isDir(filepath.Join(s.builtinDir, name)) {
 		sourceDir = filepath.Join(s.builtinDir, name)
@@ -168,7 +161,7 @@ func (s *Service) EnableSkill(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
-func (s *Service) CreateSkill(ctx context.Context, req routers.CreateSkillRequest) (bool, error) {
+func (s *ManagerService) CreateSkill(ctx context.Context, req routers.CreateSkillRequest) (bool, error) {
 	_ = ctx
 	skillDir := filepath.Join(s.customizedDir, req.Name)
 	if err := os.MkdirAll(s.customizedDir, 0o755); err != nil {
@@ -207,7 +200,7 @@ func (s *Service) CreateSkill(ctx context.Context, req routers.CreateSkillReques
 	return true, nil
 }
 
-func (s *Service) DeleteSkill(ctx context.Context, name string) (bool, error) {
+func (s *ManagerService) DeleteSkill(ctx context.Context, name string) (bool, error) {
 	_ = ctx
 	dir := filepath.Join(s.customizedDir, name)
 	if !isDir(dir) {
@@ -219,7 +212,7 @@ func (s *Service) DeleteSkill(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
-func (s *Service) LoadSkillFile(ctx context.Context, skillName, source, filePath string) (string, error) {
+func (s *ManagerService) LoadSkillFile(ctx context.Context, skillName, source, filePath string) (string, error) {
 	_ = ctx
 	if source != "builtin" && source != "customized" {
 		return "", nil
@@ -253,8 +246,7 @@ func (s *Service) LoadSkillFile(ctx context.Context, skillName, source, filePath
 	return string(data), nil
 }
 
-// syncFromActiveToCustomized 将 active 中与 builtin 不同的技能同步到 customized（与 copaw 一致）。
-func (s *Service) syncFromActiveToCustomized(names []string) error {
+func (s *ManagerService) syncFromActiveToCustomized(names []string) error {
 	if !isDir(s.activeDir) {
 		return nil
 	}
@@ -300,7 +292,6 @@ func (s *Service) syncFromActiveToCustomized(names []string) error {
 			continue
 		}
 		if _, inBuiltin := builtinMap[name]; inBuiltin {
-			// 与 builtin 完全一致的可跳过（简化：不比较内容，仅跳过 builtin 有的）
 			continue
 		}
 		dst := filepath.Join(s.customizedDir, name)
@@ -349,8 +340,6 @@ func copyDir(src, dst string) error {
 	})
 }
 
-// createFilesFromTree 根据 map[string]any 树状结构创建文件和目录。
-// 值为 string 表示文件内容，为 map[string]any 表示子目录，nil 表示空文件。
 func createFilesFromTree(baseDir string, tree map[string]any) error {
 	for name, val := range tree {
 		p := filepath.Join(baseDir, name)
@@ -367,7 +356,6 @@ func createFilesFromTree(baseDir string, tree map[string]any) error {
 				return err
 			}
 		default:
-			// 对应 copaw 的 None / 空文件
 			if err := os.WriteFile(p, []byte{}, 0o644); err != nil {
 				return err
 			}
