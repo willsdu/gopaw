@@ -163,11 +163,14 @@ func (s *ManagerService) EnableSkill(ctx context.Context, name string) (bool, er
 
 func (s *ManagerService) CreateSkill(ctx context.Context, req routers.CreateSkillRequest) (bool, error) {
 	_ = ctx
-	skillDir := filepath.Join(s.customizedDir, req.Name)
 	if err := os.MkdirAll(s.customizedDir, 0o755); err != nil {
 		return false, err
 	}
-	if isDir(skillDir) {
+	skillDir := filepath.Join(s.customizedDir, req.Name)
+	if isDir(skillDir) && !req.Overwrite {
+		return false, nil
+	}
+	if isDir(skillDir) && req.Overwrite {
 		if err := os.RemoveAll(skillDir); err != nil {
 			return false, err
 		}
@@ -178,6 +181,11 @@ func (s *ManagerService) CreateSkill(ctx context.Context, req routers.CreateSkil
 	skillMD := filepath.Join(skillDir, skillMarkdown)
 	if err := os.WriteFile(skillMD, []byte(req.Content), 0o644); err != nil {
 		return false, err
+	}
+	if len(req.ExtraFiles) > 0 {
+		if err := createFilesFromTree(skillDir, req.ExtraFiles); err != nil {
+			return false, err
+		}
 	}
 	if len(req.References) > 0 {
 		refDir := filepath.Join(skillDir, "references")

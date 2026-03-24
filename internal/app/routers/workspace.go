@@ -1,5 +1,7 @@
 package routers
 
+// 本文件实现 /api/workspace/download|upload：将整个工作区目录打包为 zip 下载，或从 zip 安全解压回工作区。
+
 import (
 	"archive/zip"
 	"bytes"

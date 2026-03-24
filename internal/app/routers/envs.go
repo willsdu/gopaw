@@ -1,5 +1,7 @@
 package routers
 
+// 本文件实现 /api/envs/*：工作区 .env 键值对的列出、整表覆盖保存与单键删除（KEY=VALUE 行格式）。
+
 import (
 	"bufio"
 	"net/http"

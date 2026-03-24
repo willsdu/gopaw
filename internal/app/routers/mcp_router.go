@@ -1,15 +1,13 @@
 package routers
 
+// 本文件实现 /api/mcp/*：MCP 客户端 CRUD 与 toggle。
+// 持久化与 copaw 一致：工作区 config.json 中的 mcp.clients（不再单独使用 mcp_clients.json，除非一次性从该文件迁移）。
+
 import (
-	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/gin-gonic/gin"
-
-	"gopaw/internal/config"
 )
 
 type MCPClientInfo struct {
@@ -29,7 +27,7 @@ type MCPClientInfo struct {
 type MCPClientCreateRequest struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
-	Enabled     bool              `json:"enabled"`
+	Enabled     *bool             `json:"enabled,omitempty"`
 	Transport   string            `json:"transport"`
 	URL         string            `json:"url"`
 	Headers     map[string]string `json:"headers"`
@@ -54,38 +52,8 @@ type MCPClientUpdateRequest struct {
 
 type MCPController struct{}
 
-func mcpPath() string {
-	return filepath.Join(config.WorkingDir(), "mcp_clients.json")
-}
-
-func loadMCPClients() (map[string]MCPClientInfo, error) {
-	out := map[string]MCPClientInfo{}
-	b, err := os.ReadFile(mcpPath())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return out, nil
-		}
-		return nil, err
-	}
-	if err := json.Unmarshal(b, &out); err != nil {
-		return map[string]MCPClientInfo{}, nil
-	}
-	return out, nil
-}
-
-func saveMCPClients(m map[string]MCPClientInfo) error {
-	if err := os.MkdirAll(config.WorkingDir(), 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(mcpPath(), b, 0o644)
-}
-
 func (mc *MCPController) List(c *gin.Context) {
-	m, err := loadMCPClients()
+	m, err := loadMCPClientsFromConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -97,14 +65,16 @@ func (mc *MCPController) List(c *gin.Context) {
 	sort.Strings(keys)
 	out := make([]MCPClientInfo, 0, len(keys))
 	for _, k := range keys {
-		out = append(out, m[k])
+		v := m[k]
+		v.Key = k
+		out = append(out, mcpClientMasked(v))
 	}
 	c.JSON(http.StatusOK, out)
 }
 
 func (mc *MCPController) Get(c *gin.Context) {
 	key := c.Param("client_key")
-	m, err := loadMCPClients()
+	m, err := loadMCPClientsFromConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -114,7 +84,8 @@ func (mc *MCPController) Get(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "MCP client '" + key + "' not found"})
 		return
 	}
-	c.JSON(http.StatusOK, v)
+	v.Key = key
+	c.JSON(http.StatusOK, mcpClientMasked(v))
 }
 
 func (mc *MCPController) Create(c *gin.Context) {
@@ -130,7 +101,11 @@ func (mc *MCPController) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "client_key is required"})
 		return
 	}
-	m, err := loadMCPClients()
+	if body.Client.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "client.name is required"})
+		return
+	}
+	m, err := loadMCPClientsFromConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -139,25 +114,19 @@ func (mc *MCPController) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "MCP client already exists"})
 		return
 	}
-	created := MCPClientInfo{
-		Key:         body.ClientKey,
-		Name:        body.Client.Name,
-		Description: body.Client.Description,
-		Enabled:     body.Client.Enabled,
-		Transport:   body.Client.Transport,
-		URL:         body.Client.URL,
-		Headers:     body.Client.Headers,
-		Command:     body.Client.Command,
-		Args:        body.Client.Args,
-		Env:         body.Client.Env,
-		Cwd:         body.Client.Cwd,
+	created := applyMCPCreateDefaults(&body.Client)
+	created.Key = body.ClientKey
+	normalizeMCPTransport(&created)
+	if err := validateMCPClient(&created); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 	m[body.ClientKey] = created
-	if err := saveMCPClients(m); err != nil {
+	if err := saveMCPClientsToConfig(m); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusCreated, created)
+	c.JSON(http.StatusCreated, mcpClientMasked(created))
 }
 
 func (mc *MCPController) Update(c *gin.Context) {
@@ -167,7 +136,7 @@ func (mc *MCPController) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
-	m, err := loadMCPClients()
+	m, err := loadMCPClientsFromConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -177,6 +146,7 @@ func (mc *MCPController) Update(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "MCP client '" + key + "' not found"})
 		return
 	}
+	v.Key = key
 	if upd.Name != nil {
 		v.Name = *upd.Name
 	}
@@ -212,17 +182,22 @@ func (mc *MCPController) Update(c *gin.Context) {
 	if upd.Cwd != nil {
 		v.Cwd = *upd.Cwd
 	}
+	normalizeMCPTransport(&v)
+	if err := validateMCPClient(&v); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	m[key] = v
-	if err := saveMCPClients(m); err != nil {
+	if err := saveMCPClientsToConfig(m); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, v)
+	c.JSON(http.StatusOK, mcpClientMasked(v))
 }
 
 func (mc *MCPController) Toggle(c *gin.Context) {
 	key := c.Param("client_key")
-	m, err := loadMCPClients()
+	m, err := loadMCPClientsFromConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -233,17 +208,18 @@ func (mc *MCPController) Toggle(c *gin.Context) {
 		return
 	}
 	v.Enabled = !v.Enabled
+	v.Key = key
 	m[key] = v
-	if err := saveMCPClients(m); err != nil {
+	if err := saveMCPClientsToConfig(m); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, v)
+	c.JSON(http.StatusOK, mcpClientMasked(v))
 }
 
 func (mc *MCPController) Delete(c *gin.Context) {
 	key := c.Param("client_key")
-	m, err := loadMCPClients()
+	m, err := loadMCPClientsFromConfig()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -253,7 +229,7 @@ func (mc *MCPController) Delete(c *gin.Context) {
 		return
 	}
 	delete(m, key)
-	if err := saveMCPClients(m); err != nil {
+	if err := saveMCPClientsToConfig(m); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

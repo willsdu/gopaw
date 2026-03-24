@@ -1,11 +1,20 @@
 package routers
 
+// 本文件实现 /api/local-models/*：与 copaw 路由形状一致；校验 backend/source 枚举。
+// - source=huggingface：若存在 huggingface-cli，执行真实 download。
+// - source=modelscope：若存在 python/python3 且已 pip install modelscope，用 snapshot_download 拉全库（与 copaw MLX 路径类似）。
+// - 否则短时占位完成。
+
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +22,74 @@ import (
 
 	"gopaw/internal/config"
 )
+
+func isAllowedLocalBackend(b string) bool {
+	switch strings.ToLower(strings.TrimSpace(b)) {
+	case "llamacpp", "mlx":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAllowedLocalSource(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "huggingface", "modelscope":
+		return true
+	default:
+		return false
+	}
+}
+
+func findHuggingfaceCLI() string {
+	for _, name := range []string{"huggingface-cli", "huggingface-cli.exe"} {
+		p, err := exec.LookPath(name)
+		if err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+func findPythonCLI() string {
+	for _, name := range []string{"python3", "python", "py"} {
+		p, err := exec.LookPath(name)
+		if err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// modelscopeSnapshotScript：与 copaw 使用 modelscope.hub.snapshot_download 一致；local_dir / model_id 经 argv 传入，避免注入。
+const modelscopeSnapshotScript = `import sys
+local_dir = sys.argv[1]
+model_id = sys.argv[2]
+try:
+    from modelscope.hub.snapshot_download import snapshot_download as _sd
+except ImportError:
+    from modelscope import snapshot_download as _sd
+_sd(model_id=model_id, local_dir=local_dir)
+`
+
+func safeModelDirSegment(id string) string {
+	s := strings.ReplaceAll(id, ":", "_")
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, "\\", "_")
+	return s
+}
+
+func dirTotalSize(root string) int64 {
+	var n int64
+	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		n += info.Size()
+		return nil
+	})
+	return n
+}
 
 type DownloadRequest struct {
 	RepoID   string `json:"repo_id"`
@@ -135,6 +212,14 @@ func (lc *LocalModelsController) DownloadModel(c *gin.Context) {
 	if body.Source == "" {
 		body.Source = "huggingface"
 	}
+	if !isAllowedLocalBackend(body.Backend) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid backend: use llamacpp or mlx"})
+		return
+	}
+	if !isAllowedLocalSource(body.Source) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid source: use huggingface or modelscope"})
+		return
+	}
 	taskID := time.Now().UTC().Format("20060102150405.000000000")
 	task := DownloadTaskResponse{
 		TaskID:   taskID,
@@ -160,12 +245,18 @@ func (lc *LocalModelsController) DownloadModel(c *gin.Context) {
 		return
 	}
 
-	cancelled := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	localMu.Lock()
-	localCancelFuncs[taskID] = func() { close(cancelled) }
+	localCancelFuncs[taskID] = cancel
 	localMu.Unlock()
 
 	go func(req DownloadRequest, tID string) {
+		defer func() {
+			localMu.Lock()
+			delete(localCancelFuncs, tID)
+			localMu.Unlock()
+		}()
+
 		update := func(fn func(*localModelsState)) {
 			localMu.Lock()
 			defer localMu.Unlock()
@@ -182,26 +273,136 @@ func (lc *LocalModelsController) DownloadModel(c *gin.Context) {
 			cur.Tasks[tID] = t
 		})
 
+		mid := localModelID(req)
+		destDir := filepath.Join(config.WorkingDir(), "models", safeModelDirSegment(mid))
+
+		if hf := findHuggingfaceCLI(); hf != "" && strings.EqualFold(req.Source, "huggingface") {
+			_ = os.MkdirAll(destDir, 0o755)
+			args := []string{"download", req.RepoID, "--local-dir", destDir}
+			if fn := strings.TrimSpace(req.Filename); fn != "" {
+				args = append(args, "--include", fn)
+			}
+			cmd := exec.CommandContext(ctx, hf, args...)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				if ctx.Err() != nil {
+				update(func(cur *localModelsState) {
+					t := cur.Tasks[tID]
+					t.Status = "cancelled"
+					cur.Tasks[tID] = t
+				})
+					notifyConsoleIfConfigured("Local model download cancelled: %s (%s)", req.RepoID, req.Source)
+					return
+				}
+				msg := err.Error()
+				if stderr.Len() > 0 {
+					msg = strings.TrimSpace(stderr.String())
+				}
+				update(func(cur *localModelsState) {
+					t := cur.Tasks[tID]
+					t.Status = "failed"
+					t.Error = msg
+					cur.Tasks[tID] = t
+				})
+				notifyConsoleIfConfigured("Local model download failed (%s / %s): %s", req.RepoID, req.Source, msg)
+				return
+			}
+			sz := dirTotalSize(destDir)
+			m := LocalModelResponse{
+				ID:          mid,
+				RepoID:      req.RepoID,
+				Filename:    req.Filename,
+				Backend:     req.Backend,
+				Source:      req.Source,
+				FileSize:    sz,
+				LocalPath:   destDir,
+				DisplayName: mid,
+			}
+			update(func(cur *localModelsState) {
+				cur.Models[m.ID] = m
+				t := cur.Tasks[tID]
+				t.Status = "completed"
+				t.Result = &m
+				cur.Tasks[tID] = t
+			})
+			notifyConsoleIfConfigured("Local model download completed: %s (%s, %s)", req.RepoID, req.Backend, req.Source)
+			return
+		}
+
+		if py := findPythonCLI(); py != "" && strings.EqualFold(req.Source, "modelscope") {
+			_ = os.MkdirAll(destDir, 0o755)
+			cmd := exec.CommandContext(ctx, py, "-c", modelscopeSnapshotScript, destDir, req.RepoID)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				if ctx.Err() != nil {
+				update(func(cur *localModelsState) {
+					t := cur.Tasks[tID]
+					t.Status = "cancelled"
+					cur.Tasks[tID] = t
+				})
+					notifyConsoleIfConfigured("Local model download cancelled: %s (%s)", req.RepoID, req.Source)
+					return
+				}
+				msg := err.Error()
+				if stderr.Len() > 0 {
+					msg = strings.TrimSpace(stderr.String())
+				}
+				update(func(cur *localModelsState) {
+					t := cur.Tasks[tID]
+					t.Status = "failed"
+					t.Error = msg
+					cur.Tasks[tID] = t
+				})
+				notifyConsoleIfConfigured("Local model download failed (%s / %s): %s", req.RepoID, req.Source, msg)
+				return
+			}
+			sz := dirTotalSize(destDir)
+			m := LocalModelResponse{
+				ID:          mid,
+				RepoID:      req.RepoID,
+				Filename:    req.Filename,
+				Backend:     req.Backend,
+				Source:      req.Source,
+				FileSize:    sz,
+				LocalPath:   destDir,
+				DisplayName: mid,
+			}
+			update(func(cur *localModelsState) {
+				cur.Models[m.ID] = m
+				t := cur.Tasks[tID]
+				t.Status = "completed"
+				t.Result = &m
+				cur.Tasks[tID] = t
+			})
+			notifyConsoleIfConfigured("Local model download completed: %s (%s, %s)", req.RepoID, req.Backend, req.Source)
+			return
+		}
+
+		timer := time.NewTimer(1200 * time.Millisecond)
+		defer timer.Stop()
 		select {
-		case <-cancelled:
+		case <-ctx.Done():
 			update(func(cur *localModelsState) {
 				t := cur.Tasks[tID]
 				t.Status = "cancelled"
 				cur.Tasks[tID] = t
 			})
+			notifyConsoleIfConfigured("Local model download cancelled: %s (%s)", req.RepoID, req.Source)
 			return
-		case <-time.After(1200 * time.Millisecond):
+		case <-timer.C:
 		}
 
 		m := LocalModelResponse{
-			ID:          localModelID(req),
+			ID:          mid,
 			RepoID:      req.RepoID,
 			Filename:    req.Filename,
 			Backend:     req.Backend,
 			Source:      req.Source,
 			FileSize:    0,
-			LocalPath:   filepath.Join(config.WorkingDir(), "models", localModelID(req)),
-			DisplayName: localModelID(req),
+			LocalPath:   destDir,
+			DisplayName: mid,
 		}
 		update(func(cur *localModelsState) {
 			cur.Models[m.ID] = m
@@ -210,10 +411,7 @@ func (lc *LocalModelsController) DownloadModel(c *gin.Context) {
 			t.Result = &m
 			cur.Tasks[tID] = t
 		})
-
-		localMu.Lock()
-		delete(localCancelFuncs, tID)
-		localMu.Unlock()
+		notifyConsoleIfConfigured("Local model download completed (placeholder): %s (%s)", req.RepoID, req.Source)
 	}(body, taskID)
 
 	c.JSON(http.StatusOK, task)

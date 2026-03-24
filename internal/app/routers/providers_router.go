@@ -1,11 +1,18 @@
 package routers
 
+// 本文件实现 /api/models/*：多厂商 LLM 配置、自定义供应商、模型列表、连通性探测占位与当前激活模型。
+// 持久化文件为 providers.json。
+
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -87,6 +94,21 @@ func providersPath() string {
 	return filepath.Join(config.WorkingDir(), "providers.json")
 }
 
+func defaultOllamaProvider() ProviderInfo {
+	return ProviderInfo{
+		ID:           "ollama",
+		Name:         "Ollama",
+		BaseURL:      "http://127.0.0.1:11434/v1",
+		APIKeyPrefix: "",
+		ChatModel:    "OpenAIChatModel",
+		Models: []ModelInfo{
+			{ID: "llama3.2", Name: "llama3.2"},
+			{ID: "qwen2.5", Name: "qwen2.5"},
+		},
+		Custom: false,
+	}
+}
+
 func defaultProvidersState() providersState {
 	openai := ProviderInfo{
 		ID:           "openai",
@@ -111,10 +133,12 @@ func defaultProvidersState() providersState {
 		},
 		Custom: false,
 	}
+	ollama := defaultOllamaProvider()
 	return providersState{
 		Providers: map[string]ProviderInfo{
 			"openai":    openai,
 			"anthropic": anthropic,
+			"ollama":    ollama,
 		},
 		Active: ActiveModel{
 			ProviderID: "openai",
@@ -137,6 +161,11 @@ func loadProvidersState() (providersState, error) {
 	}
 	if st.Providers == nil {
 		st.Providers = map[string]ProviderInfo{}
+	}
+	// 旧版 providers.json 无 ollama 时补一条默认项，便于 Ollama 与本机 API 对齐（不覆盖用户已有 ollama 配置）。
+	if _, ok := st.Providers["ollama"]; !ok {
+		o := defaultOllamaProvider()
+		st.Providers["ollama"] = o
 	}
 	return st, nil
 }
@@ -254,6 +283,48 @@ func (pc *ProvidersController) TestProvider(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Provider '" + providerID + "' not found"})
 		return
 	}
+	if providerID == "ollama" {
+		if _, err := ollamaListModelsFromDaemon(c.Request.Context()); err != nil {
+			c.JSON(http.StatusOK, TestConnectionResponse{
+				Success: false,
+				Message: "Connection failed: " + err.Error(),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, TestConnectionResponse{
+			Success: true,
+			Message: "Connection successful",
+		})
+		return
+	}
+	if providerIsAnthropic(p) {
+		if _, err := fetchAnthropicModels(c.Request.Context(), p); err != nil {
+			c.JSON(http.StatusOK, TestConnectionResponse{
+				Success: false,
+				Message: "Connection failed: " + err.Error(),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, TestConnectionResponse{
+			Success: true,
+			Message: "Connection successful",
+		})
+		return
+	}
+	if providerUsesOpenAICompat(p) {
+		if _, err := fetchOpenAICompatModels(c.Request.Context(), p); err != nil {
+			c.JSON(http.StatusOK, TestConnectionResponse{
+				Success: false,
+				Message: "Connection failed: " + err.Error(),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, TestConnectionResponse{
+			Success: true,
+			Message: "Connection successful",
+		})
+		return
+	}
 	success := strings.TrimSpace(p.BaseURL) != ""
 	msg := "Connection successful"
 	if !success {
@@ -274,10 +345,224 @@ func (pc *ProvidersController) DiscoverModels(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Provider '" + providerID + "' not found"})
 		return
 	}
+	if providerID == "ollama" {
+		items, err := ollamaListModelsFromDaemon(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusOK, DiscoverModelsResponse{
+				Success: false,
+				Models:  p.Models,
+				Message: "discover failed: " + err.Error(),
+			})
+			return
+		}
+		existing := make(map[string]ModelInfo, len(p.Models))
+		for _, m := range p.Models {
+			existing[m.ID] = m
+		}
+		added := 0
+		for _, om := range items {
+			id := strings.TrimSpace(om.Name)
+			if id == "" {
+				continue
+			}
+			if _, ok := existing[id]; !ok {
+				added++
+			}
+			existing[id] = ModelInfo{ID: id, Name: id}
+		}
+		next := make([]ModelInfo, 0, len(existing))
+		for _, m := range existing {
+			next = append(next, m)
+		}
+		p.Models = next
+		st.Providers[providerID] = p
+		if err := saveProvidersState(st); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, DiscoverModelsResponse{
+			Success:    true,
+			Models:     p.Models,
+			AddedCount: added,
+			Message:    "Discovered models from Ollama daemon",
+		})
+		return
+	}
+	if providerIsAnthropic(p) {
+		models, err := fetchAnthropicModels(c.Request.Context(), p)
+		if err != nil {
+			c.JSON(http.StatusOK, DiscoverModelsResponse{
+				Success: false,
+				Models:  p.Models,
+				Message: "discover failed: " + err.Error(),
+			})
+			return
+		}
+		added := mergeDiscoveredModels(&p, models)
+		st.Providers[providerID] = p
+		if err := saveProvidersState(st); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, DiscoverModelsResponse{
+			Success:    true,
+			Models:     p.Models,
+			AddedCount: added,
+			Message:    "Discovered models from Anthropic API",
+		})
+		return
+	}
+	if providerUsesOpenAICompat(p) {
+		models, err := fetchOpenAICompatModels(c.Request.Context(), p)
+		if err != nil {
+			c.JSON(http.StatusOK, DiscoverModelsResponse{
+				Success: false,
+				Models:  p.Models,
+				Message: "discover failed: " + err.Error(),
+			})
+			return
+		}
+		added := mergeDiscoveredModels(&p, models)
+		st.Providers[providerID] = p
+		if err := saveProvidersState(st); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, DiscoverModelsResponse{
+			Success:    true,
+			Models:     p.Models,
+			AddedCount: added,
+			Message:    "Discovered models from provider API",
+		})
+		return
+	}
 	c.JSON(http.StatusOK, DiscoverModelsResponse{
 		Success: true,
 		Models:  p.Models,
 	})
+}
+
+func mergeDiscoveredModels(p *ProviderInfo, discovered []ModelInfo) int {
+	existing := make(map[string]ModelInfo, len(p.Models))
+	for _, m := range p.Models {
+		existing[m.ID] = m
+	}
+	added := 0
+	for _, m := range discovered {
+		if strings.TrimSpace(m.ID) == "" {
+			continue
+		}
+		if _, ok := existing[m.ID]; !ok {
+			added++
+		}
+		existing[m.ID] = m
+	}
+	next := make([]ModelInfo, 0, len(existing))
+	for _, m := range existing {
+		next = append(next, m)
+	}
+	p.Models = next
+	return added
+}
+
+func modelsURL(base string) string {
+	b := strings.TrimSpace(strings.TrimSuffix(base, "/"))
+	if b == "" {
+		return ""
+	}
+	if strings.HasSuffix(b, "/v1") {
+		return b + "/models"
+	}
+	return b + "/v1/models"
+}
+
+func fetchOpenAICompatModels(ctx context.Context, p ProviderInfo) ([]ModelInfo, error) {
+	if strings.TrimSpace(p.BaseURL) == "" {
+		return nil, fmt.Errorf("provider base_url is empty")
+	}
+	if strings.TrimSpace(p.APIKey) == "" {
+		return nil, fmt.Errorf("provider api_key is empty")
+	}
+	url := modelsURL(p.BaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.APIKey)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slurp, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		return nil, fmt.Errorf("models %d: %s", resp.StatusCode, strings.TrimSpace(string(slurp)))
+	}
+	var obj map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&obj); err != nil {
+		return nil, err
+	}
+	data, _ := obj["data"].([]any)
+	out := make([]ModelInfo, 0, len(data))
+	for _, it := range data {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := m["id"].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		out = append(out, ModelInfo{ID: id, Name: id})
+	}
+	return out, nil
+}
+
+func fetchAnthropicModels(ctx context.Context, p ProviderInfo) ([]ModelInfo, error) {
+	if strings.TrimSpace(p.BaseURL) == "" {
+		return nil, fmt.Errorf("provider base_url is empty")
+	}
+	if strings.TrimSpace(p.APIKey) == "" {
+		return nil, fmt.Errorf("provider api_key is empty")
+	}
+	url := modelsURL(p.BaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("x-api-key", p.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slurp, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		return nil, fmt.Errorf("models %d: %s", resp.StatusCode, strings.TrimSpace(string(slurp)))
+	}
+	var obj map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&obj); err != nil {
+		return nil, err
+	}
+	data, _ := obj["data"].([]any)
+	out := make([]ModelInfo, 0, len(data))
+	for _, it := range data {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := m["id"].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		out = append(out, ModelInfo{ID: id, Name: id})
+	}
+	return out, nil
 }
 
 func (pc *ProvidersController) TestModel(c *gin.Context) {
@@ -353,6 +638,12 @@ func (pc *ProvidersController) AddModel(c *gin.Context) {
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Provider '" + providerID + "' not found"})
 		return
+	}
+	for _, m := range p.Models {
+		if m.ID == body.ID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Model '" + body.ID + "' already exists"})
+			return
+		}
 	}
 	p.Models = append(p.Models, ModelInfo{ID: body.ID, Name: body.Name})
 	st.Providers[providerID] = p

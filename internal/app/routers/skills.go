@@ -43,6 +43,10 @@ type CreateSkillRequest struct {
 	Content    string         `json:"content"`
 	References map[string]any `json:"references,omitempty"`
 	Scripts    map[string]any `json:"scripts,omitempty"`
+	// ExtraFiles 写入技能目录根下（非 references/scripts），与 Python create_skill(extra_files=...) 一致。
+	ExtraFiles map[string]any `json:"extra_files,omitempty"`
+	// Overwrite 为 false 且目录已存在时创建失败；Hub 安装会显式传入。
+	Overwrite bool `json:"overwrite,omitempty"`
 }
 
 // HubSkillSpec 对应 Python 版 HubSkillSpec。

@@ -2,35 +2,30 @@ package agent
 
 import (
 	"context"
-	"errors"
 
 	"gopaw/internal/app/routers"
 )
 
-// HubService 负责 skills hub 能力（search/install），与管理能力分离。
-// 目前作为独立服务入口，后续可对齐 copaw/agents/skills_hub.py 的远端拉取/安装逻辑。
-type HubService struct{}
-
-func NewHubService() *HubService {
-	return &HubService{}
+// HubService 实现 Skills Hub 的搜索与安装，行为对齐 copaw/agents/skills_hub.py（ClawHub、GitHub、
+// skills.sh、LobeHub 直链、SkillsMP、以及直链 JSON bundle）。
+type HubService struct {
+	mgr *ManagerService
 }
 
-func (s *HubService) Search(
-	ctx context.Context,
-	q string,
-	limit int,
-) ([]routers.HubSkillSpec, error) {
-	_ = ctx
-	_ = q
-	_ = limit
-	return nil, errors.New("skills hub not implemented yet")
+// NewHubService 创建 Hub 客户端；必须传入非 nil 的 ManagerService，用于落盘技能与启用。
+func NewHubService(mgr *ManagerService) *HubService {
+	if mgr == nil {
+		return nil
+	}
+	return &HubService{mgr: mgr}
 }
 
-func (s *HubService) Install(
-	ctx context.Context,
-	req routers.HubInstallRequest,
-) (routers.HubInstallResult, error) {
-	_ = ctx
-	_ = req
-	return routers.HubInstallResult{}, errors.New("skills hub not implemented yet")
+// Search 调用远端 Hub 搜索接口（默认 clawhub.ai）。
+func (s *HubService) Search(ctx context.Context, q string, limit int) ([]routers.HubSkillSpec, error) {
+	return hubSearchSkills(ctx, q, limit)
+}
+
+// Install 根据 bundle_url 解析来源并拉取 bundle，写入 customized 技能目录并按需启用。
+func (s *HubService) Install(ctx context.Context, req routers.HubInstallRequest) (routers.HubInstallResult, error) {
+	return installSkillFromHub(ctx, s.mgr, req)
 }

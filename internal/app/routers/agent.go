@@ -1,5 +1,9 @@
 package routers
 
+// 本文件实现 /api/agent/*：工作区下 agent/working、agent/memory 目录中的 .md 文件列表与读写，
+// 以及 agent/config.json 中的语言、运行参数（max_iters 等）、system_prompt_files 配置。
+// 路径与安全策略与 copaw/app/routers/agent.py 对齐（禁止路径穿越，仅允许 *.md 文件名）。
+
 import (
 	"encoding/json"
 	"errors"
@@ -27,9 +31,14 @@ type MdFileContent struct {
 	Content string `json:"content"`
 }
 
+// AgentsRunningConfig 与 copaw AgentsRunningConfig / 控制台类型对齐。
 type AgentsRunningConfig struct {
-	MaxIters       int `json:"max_iters"`
-	MaxInputLength int `json:"max_input_length"`
+	MaxIters                 int     `json:"max_iters"`
+	MaxInputLength           int     `json:"max_input_length"`
+	MemoryCompactRatio       float64 `json:"memory_compact_ratio"`
+	MemoryReserveRatio       float64 `json:"memory_reserve_ratio"`
+	EnableToolResultCompact  bool    `json:"enable_tool_result_compact"`
+	ToolResultCompactKeepN   int     `json:"tool_result_compact_keep_n"`
 }
 
 type agentConfigFile struct {
@@ -42,8 +51,12 @@ func defaultAgentConfig() agentConfigFile {
 	return agentConfigFile{
 		Language: "en",
 		Running: AgentsRunningConfig{
-			MaxIters:       20,
-			MaxInputLength: 32000,
+			MaxIters:                 50,
+			MaxInputLength:           131072,
+			MemoryCompactRatio:     0.75,
+			MemoryReserveRatio:     0.1,
+			EnableToolResultCompact: false,
+			ToolResultCompactKeepN:  5,
 		},
 		SystemPromptFiles: []string{
 			"AGENTS.md",
@@ -176,6 +189,96 @@ func saveAgentConfig(cfg agentConfigFile) error {
 	return os.WriteFile(agentConfigPath(), b, 0o644)
 }
 
+func runningDefaultsAsMap() map[string]any {
+	cfg := defaultAgentConfig()
+	b, err := json.Marshal(cfg.Running)
+	if err != nil {
+		return map[string]any{}
+	}
+	var m map[string]any
+	if json.Unmarshal(b, &m) != nil {
+		return map[string]any{}
+	}
+	return m
+}
+
+func loadAgentRunningRawFromDisk() map[string]any {
+	b, err := os.ReadFile(agentConfigPath())
+	if err != nil {
+		return nil
+	}
+	var root map[string]any
+	if json.Unmarshal(b, &root) != nil {
+		return nil
+	}
+	raw, _ := root["running"].(map[string]any)
+	return raw
+}
+
+// effectiveAgentsRunningMap：copaw 默认 → config.json agents.running → agent/config.json running（后者覆盖前者）。
+func effectiveAgentsRunningMap() map[string]any {
+	m := mergeShallowJSON(runningDefaultsAsMap(), loadAgentsRunningFromMain())
+	return mergeShallowJSON(m, loadAgentRunningRawFromDisk())
+}
+
+// agent/config.json 中若存在 system_prompt_files 键则视为覆盖层（含空数组）。
+func loadAgentSystemPromptFilesRawFromDisk() ([]string, bool) {
+	b, err := os.ReadFile(agentConfigPath())
+	if err != nil {
+		return nil, false
+	}
+	var root map[string]any
+	if json.Unmarshal(b, &root) != nil {
+		return nil, false
+	}
+	v, ok := root["system_prompt_files"]
+	if !ok {
+		return nil, false
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, true
+	}
+	out := make([]string, 0, len(arr))
+	for _, x := range arr {
+		if s, ok := x.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out, true
+}
+
+func effectiveAgentLanguage() string {
+	cfg, err := loadAgentConfig()
+	fileLang := ""
+	if err == nil {
+		fileLang = strings.TrimSpace(cfg.Language)
+	}
+	if fileLang != "" {
+		return strings.ToLower(fileLang)
+	}
+	if s := strings.TrimSpace(loadAgentsLanguageFromMain()); s != "" {
+		return strings.ToLower(s)
+	}
+	if err == nil && cfg.Language != "" {
+		return strings.ToLower(cfg.Language)
+	}
+	return "en"
+}
+
+func effectiveSystemPromptFiles() []string {
+	def := defaultAgentConfig().SystemPromptFiles
+	mainList := loadSystemPromptFilesFromMain()
+	base := def
+	if len(mainList) > 0 {
+		base = append([]string(nil), mainList...)
+	}
+	if disk, ok := loadAgentSystemPromptFilesRawFromDisk(); ok {
+		return disk
+	}
+	return base
+}
+
 type AgentController struct{}
 
 func (a *AgentController) ListWorkingFiles(c *gin.Context) {
@@ -277,12 +380,7 @@ func (a *AgentController) GetAgentLanguage(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	cfg, err := loadAgentConfig()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"language": cfg.Language})
+	c.JSON(http.StatusOK, gin.H{"language": effectiveAgentLanguage()})
 }
 
 func (a *AgentController) PutAgentLanguage(c *gin.Context) {
@@ -324,12 +422,7 @@ func (a *AgentController) GetAgentsRunningConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	cfg, err := loadAgentConfig()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, cfg.Running)
+	c.JSON(http.StatusOK, effectiveAgentsRunningMap())
 }
 
 func (a *AgentController) PutAgentsRunningConfig(c *gin.Context) {
@@ -337,9 +430,15 @@ func (a *AgentController) PutAgentsRunningConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	var running AgentsRunningConfig
-	if err := c.ShouldBindJSON(&running); err != nil {
+	var body map[string]any
+	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+		return
+	}
+	final := mergeShallowJSON(effectiveAgentsRunningMap(), body)
+	payload, err := json.Marshal(final)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	cfg, err := loadAgentConfig()
@@ -347,12 +446,15 @@ func (a *AgentController) PutAgentsRunningConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	cfg.Running = running
+	if err := json.Unmarshal(payload, &cfg.Running); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid running config: " + err.Error()})
+		return
+	}
 	if err := saveAgentConfig(cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, running)
+	c.JSON(http.StatusOK, effectiveAgentsRunningMap())
 }
 
 func (a *AgentController) GetSystemPromptFiles(c *gin.Context) {
@@ -360,12 +462,7 @@ func (a *AgentController) GetSystemPromptFiles(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	cfg, err := loadAgentConfig()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, cfg.SystemPromptFiles)
+	c.JSON(http.StatusOK, effectiveSystemPromptFiles())
 }
 
 func (a *AgentController) PutSystemPromptFiles(c *gin.Context) {
@@ -388,5 +485,5 @@ func (a *AgentController) PutSystemPromptFiles(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, files)
+	c.JSON(http.StatusOK, effectiveSystemPromptFiles())
 }
