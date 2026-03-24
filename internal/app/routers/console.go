@@ -5,7 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"gopaw/internal/app/consolepush"
+	"github.com/willisdu/gopaw/internal/app/consolepush"
 )
 
 // ConsoleController 提供控制台相关 HTTP 接口，与 copaw 的 routers/console.py 对齐。

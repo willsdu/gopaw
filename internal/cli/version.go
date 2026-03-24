@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"gopaw/internal/version"
+	"github.com/willisdu/gopaw/internal/version"
 )
 
 func newVersionCmd(opts rootOpts) *cobra.Command {
@@ -31,4 +31,3 @@ func newVersionCmd(opts rootOpts) *cobra.Command {
 	cmd.SetErr(opts.Err)
 	return cmd
 }
-

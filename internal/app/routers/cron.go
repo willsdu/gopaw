@@ -14,8 +14,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"gopaw/internal/app/channels"
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/app/channels"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 // 本文件实现 /api/cron/*，与 copaw/app/crons/api.py 路径与语义对齐。
@@ -36,8 +36,8 @@ type jobsDocument struct {
 }
 
 type cronRuntimeDocument struct {
-	Paused map[string]bool                    `json:"paused,omitempty"`
-	States map[string]map[string]any          `json:"states,omitempty"`
+	Paused map[string]bool           `json:"paused,omitempty"`
+	States map[string]map[string]any `json:"states,omitempty"`
 }
 
 type CronController struct{}

@@ -20,7 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 func isAllowedLocalBackend(b string) bool {
@@ -287,11 +287,11 @@ func (lc *LocalModelsController) DownloadModel(c *gin.Context) {
 			cmd.Stderr = &stderr
 			if err := cmd.Run(); err != nil {
 				if ctx.Err() != nil {
-				update(func(cur *localModelsState) {
-					t := cur.Tasks[tID]
-					t.Status = "cancelled"
-					cur.Tasks[tID] = t
-				})
+					update(func(cur *localModelsState) {
+						t := cur.Tasks[tID]
+						t.Status = "cancelled"
+						cur.Tasks[tID] = t
+					})
 					notifyConsoleIfConfigured("Local model download cancelled: %s (%s)", req.RepoID, req.Source)
 					return
 				}
@@ -337,11 +337,11 @@ func (lc *LocalModelsController) DownloadModel(c *gin.Context) {
 			cmd.Stderr = &stderr
 			if err := cmd.Run(); err != nil {
 				if ctx.Err() != nil {
-				update(func(cur *localModelsState) {
-					t := cur.Tasks[tID]
-					t.Status = "cancelled"
-					cur.Tasks[tID] = t
-				})
+					update(func(cur *localModelsState) {
+						t := cur.Tasks[tID]
+						t.Status = "cancelled"
+						cur.Tasks[tID] = t
+					})
 					notifyConsoleIfConfigured("Local model download cancelled: %s (%s)", req.RepoID, req.Source)
 					return
 				}

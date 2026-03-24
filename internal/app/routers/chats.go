@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 // 本文件实现 /api/chats/*，与 copaw/app/runner/api.py 对齐。

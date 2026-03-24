@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 const chatHistoriesFile = "chat_histories.json"
@@ -17,7 +17,7 @@ const chatHistoriesFile = "chat_histories.json"
 var chatHistMu sync.Mutex
 
 type chatHistoriesDoc struct {
-	Version int                       `json:"version"`
+	Version int                     `json:"version"`
 	Chats   map[string][]historyMsg `json:"chats"`
 }
 

@@ -17,7 +17,7 @@ import (
 	"strconv"
 	"strings"
 
-	"gopaw/internal/app/routers"
+	"github.com/willisdu/gopaw/internal/app/routers"
 )
 
 const (

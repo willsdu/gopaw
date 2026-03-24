@@ -11,7 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 // 本文件实现 GET /api/token-usage，读取与 copaw 相同的 token_usage.json 结构并聚合统计。
@@ -241,11 +241,11 @@ func RecordTokenUsage(providerID, modelName string, promptTokens, completionToke
 	ent := byKey[composite]
 	if ent == nil {
 		ent = map[string]any{
-			"provider_id":         providerID,
-			"model_name":         modelName,
-			"prompt_tokens":      promptTokens,
-			"completion_tokens":  completionTokens,
-			"call_count":         1,
+			"provider_id":       providerID,
+			"model_name":        modelName,
+			"prompt_tokens":     promptTokens,
+			"completion_tokens": completionTokens,
+			"call_count":        1,
 		}
 	} else {
 		ent["provider_id"] = providerID

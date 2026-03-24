@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"gopaw/internal/app/channels"
+	"github.com/willisdu/gopaw/internal/app/channels"
 )
 
 // 若设置 GOPAW_CONSOLE_PUSH_SESSION，则将任务类消息推到该 session 的 console 队列（与 cron 推送共用机制）。

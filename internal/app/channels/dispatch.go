@@ -3,7 +3,7 @@ package channels
 import (
 	"strings"
 
-	"gopaw/internal/app/consolepush"
+	"github.com/willisdu/gopaw/internal/app/consolepush"
 )
 
 // DispatchText 将定时任务等产生的纯文本投递到指定通道（当前仅实现 console → consolepush）。

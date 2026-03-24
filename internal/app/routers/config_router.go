@@ -14,15 +14,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 type AppConfigState struct {
-	Heartbeat  map[string]any   `json:"heartbeat"`
-	Channels   json.RawMessage  `json:"channels"`
-	LLMRouting map[string]any   `json:"llm_routing"`
-	Console    map[string]any   `json:"console"`
-	ToolGuard  map[string]any   `json:"tool_guard"`
+	Heartbeat  map[string]any  `json:"heartbeat"`
+	Channels   json.RawMessage `json:"channels"`
+	LLMRouting map[string]any  `json:"llm_routing"`
+	Console    map[string]any  `json:"console"`
+	ToolGuard  map[string]any  `json:"tool_guard"`
 }
 
 type ConfigController struct{}

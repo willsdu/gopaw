@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"gopaw/internal/app/channels"
+	"github.com/willisdu/gopaw/internal/app/channels"
 )
 
 // maybeConsolePushAfterProcess 在对话成功后，若请求带 channel=console，则推送到 consolepush（与 copaw ConsoleChannel 行为对齐）。

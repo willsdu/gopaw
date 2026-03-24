@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 const envVoicePublicWSS = "GOPAW_VOICE_PUBLIC_WSS_BASE"

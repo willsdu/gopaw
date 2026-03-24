@@ -17,9 +17,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 
-	"gopaw/internal/agent"
-	"gopaw/internal/app/routers"
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/agent"
+	"github.com/willisdu/gopaw/internal/app/routers"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 type appFlags struct {

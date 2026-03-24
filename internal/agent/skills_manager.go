@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopaw/internal/app/routers"
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/app/routers"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 // ManagerService 实现 routers.SkillService，负责技能管理（非 hub）。

@@ -6,7 +6,7 @@ package routers
 import (
 	"github.com/gin-gonic/gin"
 
-	"gopaw/internal/version"
+	"github.com/willisdu/gopaw/internal/version"
 )
 
 // Router 作为所有 HTTP 路由的集中注册入口。

@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"gopaw/internal/app/routers"
+	"github.com/willisdu/gopaw/internal/app/routers"
 )
 
 // HubService 实现 Skills Hub 的搜索与安装，行为对齐 copaw/agents/skills_hub.py（ClawHub、GitHub、

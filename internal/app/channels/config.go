@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 func strFromMap(m map[string]any, key string) string {

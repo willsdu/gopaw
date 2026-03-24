@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopaw/internal/config"
+	"github.com/willisdu/gopaw/internal/config"
 )
 
 func mainConfigJSONPath() string {
